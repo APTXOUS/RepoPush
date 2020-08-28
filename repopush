@@ -1,0 +1,400 @@
+#!/bin/bash
+
+# Use repo and manifest.xml
+PATH="~/bin/":$PATH
+export PATH
+
+
+# GitLAB
+REPO="$PWD/repo"
+TARGETXMLURL="git://127.0.0.1/manifest"
+TARGETREPOURL="http://127.0.0.1:8088"
+TARGETREPOURLPWD="http://admin:pwd@127.0.0.1:8088"
+REPOINITCOMMAND="${REPO} init -u ${TARGETXMLURL} --mirror"
+EXTRACOMMAND="-j 4"
+REPOSYNCCOMMAND="${REPO} sync ${EXTRACOMMAND}"
+PRIVATETOKEN="***********"
+MAINGROUP="AOSP"
+MAINGROUPID=1
+
+# Gerrit
+GERRITURL="admin@127.0.0.1"
+GERRITPORT=29418
+GERRITOWNER="arm7"
+GERRITPARENT="AOSP"
+GLOBALPATH="AOSP"
+
+#GLOBAL VALUE
+REPOCOUNT=0
+LOCALSOURCEPATH="$PWD"
+GERRITSOURCEPATH="/home/review_site/git/$GLOBALPATH/"
+GERRITGITURL="admin@127.0.0.1"
+LOGFILE="$PWD/../repopush_scp.log"
+LASTFILE=""
+COPYFLAG="true"
+
+
+
+checkEnvironment(){
+    hash $REPO 2>/dev/null 
+    if [ $? -eq 0 ]
+    then
+        echo "Repo command exists!"
+    else
+        echo "[ERROR]Repo is not correctlly installed. Please check your environment"
+        exit 1
+    fi
+}
+createProject()
+{
+
+    #RETURN=`curl -ss --request POST --header "PRIVATE-TOKEN: ${PRIVATETOKEN};PATH:${1};NAME:${1};NAMESPACE_ID:${2}"  "${TARGETREPOURL}/api/v4/projects/"`
+
+    RETURN=`curl -ss --request POST --header "PRIVATE-TOKEN: ${PRIVATETOKEN}"  \
+  --data "path=${1}&name=${1}&namespace_id=${2}" \
+  "${TARGETREPOURL}/api/v4/projects/"`
+    ERROR=`echo ${RETURN} | grep $1`
+    ID=`echo ${RETURN} | sed 's/{/\n/g;s/}/\n/g;s/,/\n/g;s/\[/ /g;s/\]/ /g;' | sed -n '1,/\"id\"/p' | awk -F: '{print $2}'`
+
+    if [[ $ERROR ]]
+    then
+        echo  'Successfully create remote' $1  '. ID : ' $ID
+        return $ID
+    else
+        echo  '[ERROR] create remote' $1  'FAILED:'  ${RETURN}
+        return 
+    fi
+    
+}
+
+createRemoteSubGroup()
+{
+    RETURN=`curl -ss --request POST --header "PRIVATE-TOKEN: ${PRIVATETOKEN}"  \
+  --data "path=${1}&name=${1}&parent_id=${2}" \
+  "${TARGETREPOURL}/api/v4/groups/"`
+    # echo $RETURN
+    ERROR=`echo ${RETURN} | grep $1`
+    ID=`echo ${RETURN} | sed 's/{/\n/g;s/}/\n/g;s/,/\n/g;s/\[/ /g;s/\]/ /g;' | sed -n '1,/\"id\"/p' | awk -F: '{print $2}'`
+    if [[ $ERROR ]]
+    then
+        echo  'Successfully create remote' $1  '. ID : ' $ID
+    else
+        echo  '[ERROR] create remote' $1  'FAILED:'  ${RETURN}
+        exit 1
+    fi
+    return $ID
+}
+
+checkCreateRemoteSubGroup()
+{
+
+    RETURN="`curl -ss --header "PRIVATE-TOKEN:${PRIVATETOKEN}" "${TARGETREPOURL}/api/v4/groups/$2/subgroups"`"
+    #echo $RETURN
+    ERROR=`echo ${RETURN} | grep $1`
+    ID=`echo ${RETURN} | sed 's/{/\n/g;s/}/\n/g;s/,/\n/g;s/\[/ /g;s/\]/ /g;' | sed -n '1,/\"id\"/p' | awk -F: '{print $2}'`
+    # echo $ID
+    if [[ $ERROR ]]
+    then
+        echo  'remote' $1  'exits. ID : ' $ID
+    else
+        echo  'remote GROUP' $1  'does not exit. Create remote group. '
+        createRemoteSubGroup $3 $2
+        ID=$?
+    fi
+    return $ID
+}
+
+gitPushProject()
+{
+    echo "GIT PUSH" $1 "to" "${TARGETREPOURLPWD}/${2}"
+    git remote add origin1 "${TARGETREPOURLPWD}/${2}"
+    git push -u origin1 master
+    # echo $1 $2
+}
+
+createIfNotExistGroup(){
+    for dir in `ls`
+    do
+        if [ -d $dir ]
+        then
+            # echo $dir
+            cd $dir
+            ISGIT=`echo  $dir | grep .git`
+            if [ $ISGIT ]
+            then
+                REPOCOUNT=`expr $REPOCOUNT + 1`
+                DIR2=`echo ${dir} | sed 's/.git/ /g'`
+                echo -e  $REPOCOUNT ":" $DIR2 "\t Parent Group:"$2
+                createProject $DIR2 $3
+                gitPushProject ${dir} "${2}/${dir}"
+            else
+                checkCreateRemoteSubGroup "${2}/${dir}"  $3 ${dir}
+                ID=$?
+                createIfNotExistGroup $dir  "${2}/${dir}" $ID
+            fi
+            cd ..
+        fi
+    done 
+}
+
+__main__()
+{
+    checkEnvironment
+    ${REPOINITCOMMAND}
+    EXCODE=$?
+    if [ "$EXCODE" == "1" ]; then
+        echo '[ERROR] Repo init failed!'
+        exit 1
+    fi
+    ${REPOSYNCCOMMAND}
+    EXCODE=$?
+    if [ "$EXCODE" == "1" ]; then
+        echo '[ERROR] Repo sync failed!'
+        exit 1
+    fi
+    createIfNotExistGroup ${MAINGROUP} ${MAINGROUP} ${MAINGROUPID}
+    # echo $REPOCOUNT
+    #  checkCreateRemoteGroup "AOSP-SAIC/platform"  36
+    # createRemoteSubGroup "platform919" 32
+}
+
+
+
+searchRepo()
+{
+    for dir in `ls`
+    do
+        if [ -d $dir ]
+        then
+            # echo $dir
+            cd $dir
+            ISGIT=`echo  $dir | grep .git`
+            REPONAME=$dir
+            if [ $ISGIT ]
+            then
+                REPO_PROJECT="${1}${dir}" 
+                if [ $COPYFLAG ]
+                then
+                    echo $REPO_PROJECT 
+                    echo -e "$REPO_PROJECT" >> $LOGFILE
+                    scp -r $LOCALSOURCEPATH$REPO_PROJECT"/" $GERRITGITURL:$GERRITSOURCEPATH$REPO_PROJECT".git"
+                    EXCODE=$?
+                    if [ "$EXCODE" == "1" ]; then
+                        echo "[ERROR] Repo $REPO_PROJECT scp  failed!"
+                        exit 1
+                    fi
+                else
+                    if [ $REPO_PROJECT = $LASTFILE ]
+                    then
+                        COPYFLAG="ture"
+                        echo $REPO_PROJECT 
+                        echo -e "$REPO_PROJECT" >> $LOGFILE
+                        scp -r $LOCALSOURCEPATH$REPO_PROJECT"/" $GERRITGITURL:$GERRITSOURCEPATH$REPO_PROJECT".git"
+                        EXCODE=$?
+                        if [ "$EXCODE" == "1" ]; then
+                            echo "[ERROR] Repo $REPO_PROJECT scp  failed!"
+                            exit 1
+                        fi
+                    fi
+                fi
+            else
+                searchRepo "${1}${dir}/" 
+            fi
+            cd ..
+        fi
+    done
+}
+
+
+repopushGerritCopyfromDead()
+{
+    EOF='EOF'
+    LASTFILE=`cat $LOGFILE | awk 'END {print}'`
+    echo "THE last scp repo: "$LASTFILE
+    if [ $LASTFILE ]
+    then
+        COPYFLAG=""
+        if [ $LASTFILE = $EOF ]
+        then
+            echo -e "The copy is finished!\nYou can remove the ${LOGFILE} to restart the copy."
+        else
+            searchRepo ''
+        fi
+    else
+        searchRepo ''
+    fi   
+
+    
+    echo -e EOF >> $LOGFILE
+}
+
+
+
+repopushGerritCopy()
+{
+    # SOURCEPATH
+    # repocmd='scp '$SOURCEPATH'$REPO_PROJECT.git 'admin@192.168.43.31:'/home/jzp/Documents/review_site/git/AOSP-TEST-0827/art.git'
+
+    # repocmd='echo $REPO_PROJECT; scp -r '$LOCALSOURCEPATH'$REPO_PROJECT.git '$GERRITGITURL":"$GERRITSOURCEPATH'$REPO_PROJECT.git'
+    repocmd='echo $REPO_PROJECT; scp -r '$LOCALSOURCEPATH'$REPO_PROJECT.git/* '$GERRITGITURL":"$GERRITSOURCEPATH'$REPO_PROJECT.git'
+
+    #echo $repocmd
+    repo forall -c "$repocmd"
+
+    repocmd2='echo $REPO_PROJECT; ssh -p '${GERRITPORT}" "${GERRITURL}' gerrit set-project-parent --parent '${GERRITPARENT}' '${GLOBALPATH}'/$REPO_PROJECT;'
+    repo forall -c "$repocmd2"
+
+}
+
+repopushGerritPush()
+{
+    repocmd='echo $REPO_PROJECT;git push ssh://'${GERRITURL}':'${GERRITPORT}'/$REPO_PROJECT +refs/heads/* +refs/tags/*'
+    repo forall -c "$repocmd"
+}
+
+repopushGerritCreate()
+{
+    repocmd1='echo $REPO_PROJECT; ssh -p '${GERRITPORT}" "${GERRITURL}' gerrit create-project --owner '${GERRITOWNER}' '${GLOBALPATH}'/$REPO_PROJECT;'
+    repo forall -c "$repocmd1"
+
+    repocmd2='echo $REPO_PROJECT; ssh -p '${GERRITPORT}" "${GERRITURL}' gerrit set-project-parent --parent '${GERRITPARENT}' '${GLOBALPATH}'/$REPO_PROJECT;'
+    repo forall -c "$repocmd2"
+}
+
+repopushGerrit()
+{
+    repopushGerritCreate
+    repopushGerritPush
+}
+
+__check__()
+{
+    checkEnvironment
+}
+
+__repoinit__()
+{
+    ${REPOINITCOMMAND}
+    EXCODE=$?
+    if [ "$EXCODE" == "1" ]; then
+        echo '[ERROR] Repo init failed!'
+        exit 1
+    fi
+}
+
+__reposync__()
+{
+    ${REPOSYNCCOMMAND}
+    EXCODE=$?
+    if [ "$EXCODE" == "1" ]; then
+        echo '[ERROR] Repo sync failed!'
+        exit 1
+    fi
+    echo 'Sync End'
+}
+__repopush_()
+{
+    createIfNotExistGroup ${MAINGROUP} ${MAINGROUP} ${MAINGROUPID}
+}
+
+__repopushGerritCopyfromDead__()
+{
+    repopushGerritCopyfromDead
+}
+__echohelp__()
+{
+    echo "Usage: repopush <OPTION>"
+    echo "Auto repo init and auto push to gitlab"
+    echo "OPTION:"
+    echo -e "  check\t\t Check the environment."
+    echo -e "  init\t\t Init the repo."
+    echo -e "  sync\t\t Sync the repo."
+    echo -e "  push\t\t Push the repo to gitlab."
+    echo -e "  pushGerrit\t Push the repo to Gerrit."
+    echo -e "  repo\t\t Use repo command."
+    echo -e "  help\t\t Show help."
+    
+
+}
+
+
+
+__repopushGerritHelp__()
+{
+    echo "Usage: repopush pushGerrit [OPTION]"
+    echo "Create Gerrit Repo and Auto push to Gerrit,"
+    echo "OPTION:"
+    echo -e "  -f\t\t Ignore the mistake."
+    echo -e "  -c\t\t Create the Gerrit repo."
+    echo -e "  -s\t\t Scp to the Gerrit repo."
+    echo -e "  -d\t\t Scp to the Gerrit repo from last scp repo."
+    echo -e "  -p\t\t Push to the Gerrit repo."
+    echo -e "  -h\t\t Show help."
+
+}
+
+__repopushGerrit_()
+{
+    shift
+    while getopts fcphsd opt 
+    do
+        case "$opt" in
+        f) 
+            repopushGerrit 
+        ;;
+        c) 
+            repopushGerritCreate 
+        ;;
+        s) 
+            repopushGerritCopy 
+        ;;
+        p) 
+            repopushGerritPush 
+        ;;
+        h) 
+            __repopushGerritHelp__
+        ;;
+        d) 
+            __repopushGerritCopyfromDead__
+        ;;
+        *) 
+            __repopushGerritHelp__
+        ;;
+        esac
+    done
+    
+}
+
+__repo__()
+{
+    shift
+    $REPO $@
+}
+
+__case__()
+{
+    case $1 in
+    "check")
+            __check__
+    ;;
+    "init")
+            __repoinit__
+    ;;
+    "sync")
+            __reposync__
+    ;;
+    "push")
+            __repopush_
+    ;;
+    "pushGerrit")
+            __repopushGerrit_ $@
+    ;;
+    "repo")
+            __repo__ $@
+    ;;
+    *)
+            __echohelp__
+    esac
+}
+__case__ $@
+
